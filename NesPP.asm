@@ -5,6 +5,19 @@
   .byte 1               ; 1x  8KB CHR data
   .byte $01, $00        ; mapper 0, vertical mirroring
 
+PPUCTRL = $2000
+PPUMASK = $2001
+PPUSTATUS = $2002
+PPUSCROLL = $2005
+PPUADDR = $2006
+PPUDATA = $2007
+DELAYSET = $00
+DELAYCOUNTER = $01
+BOXH = $02
+BOXL = $03
+TEXTH = $04
+TEXTL = $05
+
 .segment "VECTORS"
   ;; When an NMI happens (once per frame if enabled) the label nmi:
   .addr nmi
@@ -86,62 +99,178 @@ clearbackground:
     DEY
     BNE @loopy
 
-JSR drawtext
-
 resetscroll:
     LDA $2002
     LDA #$00
     STA $2005
     STA $2005
 
-enable_rendering:
-  lda #%10000000	; Enable NMI
-  sta $2000
-  lda #%00011000	; Enable Sprites
-  sta $2001
-  
+    JSR enablerendering
+
+    JSR drawbox
+    JSR drawtext
+
 forever:
   jmp forever
 
 nmi:
-;  ldx #$00 	; Set SPR-RAM address to 0
-;  stx $2003
-;@loop:	lda hello, x 	; Load the hello message into SPR-RAM
-;  sta $2004
-;  inx
-;  cpx #$1c
-;  bne @loop
-
-
+    LDA PPUSTATUS
+    LDA #$00
+    STA PPUSCROLL
+    STA PPUSCROLL
   rti
 
+disablerendering:
+    LDA #$00
+    STA PPUCTRL
+    STA PPUMASK
+    RTS
+
+enablerendering:
+    lda #%10000000	; Enable NMI
+    sta $2000
+    lda #%00011000	; Enable Sprites, background
+    sta $2001
+    RTS
+
 drawtext:
-    LDA $2002
-    LDA #$20
-    STA $2006
-    LDA #$41
-    STA $2006
+    JSR disablerendering
+    LDA PPUSTATUS
+    LDA #$22
+    STA TEXTH
+    STA PPUADDR
+    LDA #$62
+    STA TEXTL
+    STA PPUADDR   ; Text origin is $2263
     LDX #$00
 textloop:
-    LDA kommsussortod,x
+    LDA fly_me_to_the_moon,x
+
+; Control characters are $00-$03, but $00-$0F are being reserved.
+; To check if the next character is text or a control character,
+; we need to compare the character (loaded in A) to $10.
+; The lowest value for a printed character should be $20.
+; $10 - $20 = ($-10). This should set the N flag. We should be able
+; to use BMI to jump if N is set (if a control character is detected).
+
     CMP #$10
-    BMI controlcharacter
-    STA $2007
+    BMI control_character   ; For now, exiting the loop when we get to $01 should
+                  ; prove functionality.
+
+print_letter:
+    STA PPUDATA
     INX
     JMP textloop
 endtext:
+    JSR enablerendering
+    RTS
+control_character:
+    CMP #$00      ; Exit the text printing loop
+    BEQ endtext
+    CMP #$0A      ; Start printing on the next line
+    LDA TEXTL
+    CLC
+    ADC #$20
+    STA TEXTL
+    LDA PPUSTATUS
+    LDA TEXTH
+    STA PPUADDR
+    LDA TEXTL
+    STA PPUADDR
+    INX
+    JMP textloop
+textdelay:
+    LDA DELAYSET
+    STA DELAYCOUNTER
+delayloop:
+    bit $2002
+    bpl delayloop
+    DEC DELAYCOUNTER
+    BNE delayloop
     RTS
 
-controlcharacter:
-    CMP #$00
-    
+drawbox:
+    JSR disablerendering
+; Set top-left box coordinates    
+    LDA PPUSTATUS
+    LDA #$22
+    STA BOXH
+    STA PPUADDR
+    LDA #$21
+    STA BOXL
+    STA PPUADDR
+    LDA #$77
+    STA PPUDATA
+; Draw top row
+    LDA #$78
+    LDX #$1D
+@top_loop:  
+    STA PPUDATA
+    DEX
+    BNE @top_loop
+    LDA #$79
+    STA PPUDATA
+; Draw middle rows
+; Increment the box origin by $20 (down 1 row)
+    LDY #$08
+@middle_height:
+    JSR box_new_row
+    LDA PPUSTATUS
+    LDA BOXH
+    STA PPUADDR
+    LDA BOXL
+    STA PPUADDR
+    LDA #$7A
+    STA PPUDATA
+    LDA #$03
+    LDX #$1D
+  @middle_loop:
+    STA PPUDATA
+    DEX
+    BNE @middle_loop
+    LDA #$7C
+    STA PPUDATA
+    DEY
+    BNE @middle_height
+; Draw bottom row
+    JSR box_new_row
+    LDA PPUSTATUS
+    LDA BOXH
+    STA PPUADDR
+    LDA BOXL
+    STA PPUADDR
+    LDA #$7D
+    STA PPUDATA
+    LDA #$7E
+    LDX #$1D
+@bottom_loop:  
+    STA PPUDATA
+    DEX
+    BNE @bottom_loop
+    LDA #$7F
+    STA PPUDATA
+    JSR enablerendering
+    RTS
+
+box_new_row:
+    LDA BOXL
+    CLC
+    ADC #$20
+    STA BOXL
+    LDA BOXH
+    ADC #$00
+    STA BOXH
     RTS
 
 kommsussortod:
-    .byte "i wish"
-    .byte $01
-    .byte "that i could turn back time"
-    .byte $00
+    .byte "i wish", $01
+    .byte "that i could turn back time", $01
+    .byte "cos now the guilt is all mine", $01
+    .byte "can't live without", $01
+    .byte "the trust from those you love", $00
+
+fly_me_to_the_moon:
+    .incbin "test_text.txt"
 
 hello:
   .byte $00, $00, $00, $00 	; Why do I need these here?
